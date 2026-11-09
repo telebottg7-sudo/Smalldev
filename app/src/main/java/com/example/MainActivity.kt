@@ -216,6 +216,14 @@ fun SmartCodeIdeApp(
                                 },
                                 onExportZip = { id, onComplete ->
                                     viewModel.exportProjectZip(id, onComplete)
+                                },
+                                onCloneGitProject = { url, name ->
+                                    viewModel.cloneGitProject(url, name)
+                                    isInEditorMode = true
+                                },
+                                onImportZip = { uri, name ->
+                                    viewModel.importZipProject(uri, name)
+                                    isInEditorMode = true
                                 }
                             )
                         }

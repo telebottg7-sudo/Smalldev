@@ -41,6 +41,20 @@ enum class ProjectTemplate(
         description = "Clean project root ready for custom scratchpad or imported files.",
         iconTag = "DIR",
         primaryLanguage = CodeLanguage.TEXT
+    ),
+    GIT_CLONE(
+        id = "git_clone",
+        title = "Git Clone",
+        description = "Cloned remote Git repository workspace.",
+        iconTag = "GIT",
+        primaryLanguage = CodeLanguage.TEXT
+    ),
+    ZIP_IMPORT(
+        id = "zip_import",
+        title = "Imported ZIP Archive",
+        description = "Extracted project files from an imported ZIP archive.",
+        iconTag = "ZIP",
+        primaryLanguage = CodeLanguage.TEXT
     )
 }
 

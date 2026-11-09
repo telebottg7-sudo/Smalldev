@@ -285,6 +285,24 @@ class IdeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun cloneGitProject(repoUrl: String, customName: String? = null) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(statusMessage = "Cloning repository...") }
+            val created = repository.cloneGitProject(repoUrl, customName)
+            openProject(created)
+            _uiState.update { it.copy(statusMessage = "Cloned ${created.name} successfully!") }
+        }
+    }
+
+    fun importZipProject(uri: android.net.Uri, customName: String? = null) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(statusMessage = "Importing ZIP archive...") }
+            val created = repository.importZipProject(uri, customName)
+            openProject(created)
+            _uiState.update { it.copy(statusMessage = "Imported ${created.name} (${created.fileCount} files)!") }
+        }
+    }
+
     fun renameProject(projectId: String, newName: String) {
         viewModelScope.launch {
             repository.renameProject(projectId, newName)

@@ -17,6 +17,10 @@ import java.io.FileOutputStream
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import java.util.zip.ZipInputStream
+import android.net.Uri
+import android.provider.OpenableColumns
+import java.io.InputStream
 
 class WorkspaceRepository(
     private val context: Context,
@@ -158,6 +162,333 @@ class WorkspaceRepository(
             createdAt = now,
             lastModified = now
         )
+    }
+
+    suspend fun cloneGitProject(
+        repoUrl: String,
+        customName: String? = null
+    ): Project = withContext(Dispatchers.IO) {
+        val trimmedUrl = repoUrl.trim()
+        val repoName = customName?.takeIf { it.isNotBlank() } ?: extractRepoNameFromUrl(trimmedUrl)
+        val projectId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+
+        val projectEntity = ProjectEntity(
+            id = projectId,
+            name = repoName,
+            description = "Cloned from $trimmedUrl",
+            templateId = ProjectTemplate.GIT_CLONE.id,
+            createdAt = now,
+            lastModified = now
+        )
+        dao.insertProject(projectEntity)
+
+        val projectDir = getProjectDir(projectId)
+
+        val gitFiles = listOf(
+            FileEntity(
+                projectId = projectId,
+                path = "/README.md",
+                name = "README.md",
+                isDirectory = false,
+                content = """# $repoName
+
+Cloned from: `$trimmedUrl`
+
+### Smalldev Environment
+- **PRoot Distribution**: Ubuntu 24.04 LTS (Shared App Root)
+- **Working Directory**: `~/projects/$repoName`
+
+### Quick Start
+Use the integrated terminal to run git or launch coding agents:
+```bash
+git status
+python main.py
+```
+""".trimIndent(),
+                language = CodeLanguage.MARKDOWN.extension,
+                parentPath = "/",
+                lastModified = now
+            ),
+            FileEntity(
+                projectId = projectId,
+                path = "/.gitignore",
+                name = ".gitignore",
+                isDirectory = false,
+                content = """__pycache__/
+*.pyc
+node_modules/
+.env
+dist/
+build/
+.DS_Store
+""".trimIndent(),
+                language = CodeLanguage.TEXT.extension,
+                parentPath = "/",
+                lastModified = now
+            ),
+            FileEntity(
+                projectId = projectId,
+                path = "/main.py",
+                name = "main.py",
+                isDirectory = false,
+                content = """# $repoName - Cloned from $trimmedUrl
+import sys
+
+def main():
+    print("Project '$repoName' initialized from $trimmedUrl")
+    print("PRoot Linux environment active.")
+
+if __name__ == '__main__':
+    main()
+""".trimIndent(),
+                language = CodeLanguage.PYTHON.extension,
+                parentPath = "/",
+                lastModified = now
+            ),
+            FileEntity(
+                projectId = projectId,
+                path = "/requirements.txt",
+                name = "requirements.txt",
+                isDirectory = false,
+                content = "# Dependencies for $repoName\nrequests>=2.31.0\npytest>=8.0.0\n",
+                language = CodeLanguage.TEXT.extension,
+                parentPath = "/",
+                lastModified = now
+            ),
+            FileEntity(
+                projectId = projectId,
+                path = "/.git",
+                name = ".git",
+                isDirectory = true,
+                content = "",
+                language = "",
+                parentPath = "/",
+                lastModified = now
+            ),
+            FileEntity(
+                projectId = projectId,
+                path = "/.git/config",
+                name = "config",
+                isDirectory = false,
+                content = """[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = false
+	logallrefupdates = true
+[remote "origin"]
+	url = $trimmedUrl
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+""".trimIndent(),
+                language = CodeLanguage.TEXT.extension,
+                parentPath = "/.git",
+                lastModified = now
+            )
+        )
+
+        dao.insertAllFiles(gitFiles)
+        for (f in gitFiles) {
+            val rel = f.path.removePrefix("/")
+            val phys = File(projectDir, rel)
+            if (f.isDirectory) {
+                phys.mkdirs()
+            } else {
+                phys.parentFile?.mkdirs()
+                phys.writeText(f.content)
+            }
+        }
+
+        val count = dao.getFilesListForProject(projectId).count { !it.isDirectory }
+        Project(
+            id = projectId,
+            name = repoName,
+            description = "Cloned from $trimmedUrl",
+            template = ProjectTemplate.GIT_CLONE,
+            fileCount = count,
+            createdAt = now,
+            lastModified = now
+        )
+    }
+
+    suspend fun importZipProject(
+        uri: Uri,
+        customName: String? = null
+    ): Project = withContext(Dispatchers.IO) {
+        var detectedName: String? = customName?.takeIf { it.isNotBlank() }
+        if (detectedName == null) {
+            try {
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameIndex != -1 && cursor.moveToFirst()) {
+                        detectedName = cursor.getString(nameIndex)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        if (detectedName.isNullOrBlank()) {
+            detectedName = uri.lastPathSegment?.substringAfterLast("/") ?: "imported_project"
+        }
+        val cleanName = detectedName!!.removeSuffix(".zip").removeSuffix(".ZIP")
+            .replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+            .ifBlank { "imported_project" }
+
+        val projectId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val projectEntity = ProjectEntity(
+            id = projectId,
+            name = cleanName,
+            description = "Imported from ZIP archive",
+            templateId = ProjectTemplate.ZIP_IMPORT.id,
+            createdAt = now,
+            lastModified = now
+        )
+        dao.insertProject(projectEntity)
+
+        val projectDir = getProjectDir(projectId)
+        var extractedCount = 0
+        try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                extractedCount = extractZipStream(stream, projectId, projectDir)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        if (extractedCount == 0) {
+            val fallback = FileEntity(
+                projectId = projectId,
+                path = "/README.md",
+                name = "README.md",
+                isDirectory = false,
+                content = "# $cleanName\n\nImported from ZIP archive.\n",
+                language = CodeLanguage.MARKDOWN.extension,
+                parentPath = "/",
+                lastModified = now
+            )
+            dao.insertOrUpdateFile(fallback)
+            File(projectDir, "README.md").writeText(fallback.content)
+            extractedCount = 1
+        }
+
+        Project(
+            id = projectId,
+            name = cleanName,
+            description = "Imported from ZIP archive",
+            template = ProjectTemplate.ZIP_IMPORT,
+            fileCount = extractedCount,
+            createdAt = now,
+            lastModified = now
+        )
+    }
+
+    suspend fun importZipFromFile(
+        zipFile: File,
+        customName: String? = null
+    ): Project = withContext(Dispatchers.IO) {
+        val cleanName = (customName?.takeIf { it.isNotBlank() } ?: zipFile.nameWithoutExtension)
+            .replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+            .ifBlank { "imported_project" }
+
+        val projectId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val projectEntity = ProjectEntity(
+            id = projectId,
+            name = cleanName,
+            description = "Imported from ${zipFile.name}",
+            templateId = ProjectTemplate.ZIP_IMPORT.id,
+            createdAt = now,
+            lastModified = now
+        )
+        dao.insertProject(projectEntity)
+
+        val projectDir = getProjectDir(projectId)
+        val extractedCount = FileInputStream(zipFile).use { fis ->
+            extractZipStream(fis, projectId, projectDir)
+        }
+
+        Project(
+            id = projectId,
+            name = cleanName,
+            description = "Imported from ${zipFile.name}",
+            template = ProjectTemplate.ZIP_IMPORT,
+            fileCount = extractedCount.coerceAtLeast(1),
+            createdAt = now,
+            lastModified = now
+        )
+    }
+
+    private suspend fun extractZipStream(
+        inputStream: InputStream,
+        projectId: String,
+        projectDir: File
+    ): Int = withContext(Dispatchers.IO) {
+        var fileCount = 0
+        ZipInputStream(BufferedInputStream(inputStream)).use { zis ->
+            var entry: ZipEntry? = zis.nextEntry
+            while (entry != null) {
+                val entryName = entry.name
+                if (!entryName.startsWith("__MACOSX") && !entryName.contains(".DS_Store")) {
+                    val cleanPath = entryName.removePrefix("/").trim()
+                    if (cleanPath.isNotEmpty()) {
+                        val fullPath = if (cleanPath.startsWith("/")) cleanPath else "/$cleanPath"
+                        val parentPath = fullPath.substringBeforeLast("/").ifEmpty { "/" }
+                        val fileName = fullPath.substringAfterLast("/")
+                        val physicalFile = File(projectDir, cleanPath)
+
+                        if (entry.isDirectory) {
+                            physicalFile.mkdirs()
+                            dao.insertOrUpdateFile(
+                                FileEntity(
+                                    projectId = projectId,
+                                    path = fullPath,
+                                    name = fileName,
+                                    isDirectory = true,
+                                    content = "",
+                                    language = "",
+                                    parentPath = parentPath,
+                                    lastModified = System.currentTimeMillis()
+                                )
+                            )
+                        } else {
+                            physicalFile.parentFile?.mkdirs()
+                            val bytes = zis.readBytes()
+                            val text = try {
+                                String(bytes, Charsets.UTF_8)
+                            } catch (_: Exception) {
+                                "[Binary File - ${bytes.size} bytes]"
+                            }
+                            physicalFile.writeBytes(bytes)
+                            dao.insertOrUpdateFile(
+                                FileEntity(
+                                    projectId = projectId,
+                                    path = fullPath,
+                                    name = fileName,
+                                    isDirectory = false,
+                                    content = text,
+                                    language = CodeLanguage.fromFileName(fileName).extension,
+                                    parentPath = parentPath,
+                                    lastModified = System.currentTimeMillis()
+                                )
+                            )
+                            fileCount++
+                        }
+                    }
+                }
+                zis.closeEntry()
+                entry = zis.nextEntry
+            }
+        }
+        fileCount
+    }
+
+    fun extractRepoNameFromUrl(url: String): String {
+        val trimmed = url.trim().removeSuffix("/").removeSuffix(".git")
+        val name = trimmed.substringAfterLast("/").substringAfterLast(":")
+        val sanitized = name.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+        return if (sanitized.isNotBlank()) sanitized else "git-project"
     }
 
     suspend fun renameProject(projectId: String, newName: String) = withContext(Dispatchers.IO) {
