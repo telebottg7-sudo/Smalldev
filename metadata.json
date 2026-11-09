@@ -1,0 +1,6 @@
+{
+  "name": "Smalldev",
+  "description": "Full-featured VS Code-style IDE for Android with integrated Linux PRoot terminal, code editor, file manager, package manager, and AI coding agent support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
